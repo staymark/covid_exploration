@@ -1,13 +1,12 @@
 -- Note: Some columns may not be properly formatted in the database so some null values might be '' (empty string)
--- Add the following so that locations entries such as 'World', continents and income are not selected:
+-- Add the following clause so that locations entries such as 'World', continents, and income are not selected:
 -- where continent != ''
 
 
-
--- LOOKING AT DATA BY COUNTRY
+-- EXPLORING DATA BY COUNTRY
 
 -- Total cases vs total deaths
--- Case death rate (percentage of cases that resulted in death)
+-- Case death rate (percentage of cases that resulted in death) by day
 
 select location,
 	date,
@@ -20,7 +19,7 @@ where continent != ''
 order by location, date;
 
 -- Total cases vs population
--- Population infection rate (percentage of cases in the population)
+-- Population infection rate (percentage of population that has gotten covid) by day
 
 select location,
 	date,
@@ -29,20 +28,20 @@ select location,
 	(total_cases::decimal/population) * 100 as case_percentage
 from covid_deaths
 where continent != ''
-order by location, date desc;
+order by location, date;
 
--- Countries with highest infection rate (cases in population) 
+-- Peak population infection rate 
 
 select location,
 	population,
 	max(total_cases) as max_case_count,
-	max((total_cases::decimal/population))*100 as max_case_percentage
+	max((total_cases::decimal/population)) * 100 as max_case_percentage
 from covid_deaths
 where continent != ''
 group by location, population
 order by max_case_percentage desc;
 
--- Countries with highest death count
+-- Death count
 
 select location,
 	max(total_deaths) as max_death_count
@@ -51,33 +50,134 @@ where continent != ''
 group by location
 order by max_death_count desc;
 
--- Countries with highest population death rate (deaths in population)
+-- Peak population death rate (deaths in population)
 
 select location,
 	population,
 	max(total_deaths) as max_death_count,
-	max((total_deaths::decimal/population))*100 as max_death_percentage	
+	max((total_deaths::decimal/population)) * 100 as max_death_percentage	
 from covid_deaths
 where continent != ''
 group by location, population
 order by max_death_percentage desc;
 
 
--- LOOKING AT DATA BY CONTINENT INSTEAD OF COUNTRY
+-- EXPLORING DATA BY CONTINENT
 
--- Continents with highest population death rate
+-- Case death rate by day
 
-select continent, 
-	max(total_deaths) as max_death_count,
-	max((total_deaths::decimal/population))*100 as max_death_percentage	
-from covid_deaths
-where continent != ''
-group by continent 
-order by max_death_percentage desc;
+with continent_cdr_cte as ( -- total cases and deaths for each continent by day
+	select continent,
+		date,
+		sum(total_cases) as total_cases,
+		sum(total_deaths) as total_deaths
+	from covid_deaths
+	where continent != ''
+	group by continent, date
+	order by continent, date
+)
 
--- LOOKING AT DATA GLOBALLY
+select continent,
+	date,
+	total_cases,
+	total_deaths,
+	(total_deaths::decimal/total_cases) * 100 as death_percentage
+from continent_cdr_cte;
 
--- Case death rate
+-- Population infection rate by day
+
+with continent_pir_cte as ( -- total population and cases for each continent by day
+	select continent,
+		date,
+		sum(population) as total_population,
+		sum(total_cases) as total_cases
+	from covid_deaths
+	where continent != ''
+	group by continent, date
+	order by continent, date
+)
+
+select continent,
+	date,
+	total_population,
+	total_cases,
+	(total_cases::decimal/total_population) * 100 as case_percentage
+from continent_pir_cte;
+
+
+-- Peak population infection rate
+	
+with country_peak_cases_cte as ( -- max cases for each country
+	select location,
+		continent, 
+		population,
+		max(total_cases) as peak_cases
+	from covid_deaths
+	where continent != ''
+	group by location, continent, population 
+),
+continent_peak_cases_cte as ( -- max cases for each continent
+	select continent,
+		sum(population) as continent_population,
+		sum(peak_cases) as continent_peak_cases
+	from country_peak_cases_cte
+	group by continent
+)
+
+select continent,
+	continent_population,
+	continent_peak_cases,
+	(continent_peak_cases::decimal/continent_population) * 100 as peak_case_percentage
+from continent_peak_cases_cte;
+
+-- Death count
+
+with country_deaths_cte as ( -- death count for each country
+	select location,
+		continent, 
+		population,
+		max(total_deaths) as death_count
+	from covid_deaths
+	where continent != ''
+	group by location, continent, population
+)
+
+select continent,
+	sum(death_count) as death_count
+from country_deaths_cte
+group by continent
+order by death_count desc;
+
+-- Peak population death rate
+
+with country_deaths_cte as ( -- death count for each country
+	select location,
+		continent, 
+		population,
+		max(total_deaths) as death_count
+	from covid_deaths
+	where continent != ''
+	group by location, continent, population
+),
+continent_deaths_cte as ( -- death count and total population for each continent
+	select continent,
+		sum(population) as continent_population,
+		sum(death_count) as continent_death_count
+	from country_deaths_cte
+	group by continent
+)
+
+select continent,
+	continent_death_count,
+	continent_population,
+	(continent_death_count::decimal/continent_population) * 100 as population_death_percentage
+from continent_deaths_cte
+order by population_death_percentage desc;
+
+
+-- EXPLORING DATA GLOBALLY
+
+-- Case death rate by day
 -- Sum new_cases and new_deaths to get totals for the day only
 
 select date,
@@ -89,7 +189,7 @@ where continent != ''
 group by date
 order by date;
 
--- Population vaccination rate
+-- Population vaccination rate by day
 
 -- METHOD 1: CTE
 
@@ -109,7 +209,7 @@ with vacc_total_cte as (
 		and cv.location = cd.location
 	where cd.continent != ''
 )
-
+	
 select *, 
 	(vacc_running_total/population) * 100 as pop_vacc_rate
 from vacc_total_cte;
@@ -137,25 +237,45 @@ select *,
 	(vacc_running_total/population) * 100 as pop_vacc_rate
 from vacc_total_temp;
 
+
 -- VIEWS FOR VISUALIZATION
 
--- Population vaccination rate
+-- Case death rate by day
 
-create view pop_vacc_rate as
-	select cd.continent, 
-		cd.location, 
-		cd.date, 
-		cd.population, 
-		cv.new_vaccinations,
-		sum(cv.new_vaccinations) over( 
-			partition by cd.location
-			order by cd.location, cd.date
-		) as vacc_running_total
-	from covid_deaths cd 
-	inner join covid_vaccinations cv 
-		on cv.date = cd.date
-		and cv.location = cd.location
-	where cd.continent != ''
+-- drop view if exists global_case_death_rate
+create view global_case_death_rate as (
+	select date,
+		sum(new_cases) as total_cases,
+		sum(new_deaths) as total_deaths,
+		(sum(new_deaths::decimal) / nullif(sum(new_cases), 0)) * 100 as daily_death_percentage
+	from covid_deaths
+	where continent != ''
+	group by date
+	order by date
+)
 
--- reorganize query so that we do things by query type and do two for countries, continent, globally, etc.
--- add more views to use for tableau	
+-- Population vaccination rate by day
+
+-- drop view if exists global_pop_vacc_rate 
+create view global_pop_vacc_rate as (
+	with vacc_total_cte as (
+		select cd.continent, 
+			cd.location, 
+			cd.date, 
+			cd.population, 
+			cv.new_vaccinations,
+			sum(cv.new_vaccinations) over( 
+				partition by cd.location
+				order by cd.location, cd.date
+			) as vacc_running_total
+		from covid_deaths cd 
+		inner join covid_vaccinations cv 
+			on cv.date = cd.date
+			and cv.location = cd.location
+		where cd.continent != ''
+	)
+	
+	select *, 
+		(vacc_running_total/population) * 100 as pop_vacc_rate
+	from vacc_total_cte
+)
